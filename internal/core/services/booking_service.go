@@ -67,6 +67,11 @@ func (s *BookingService) CreateBooking(ctx context.Context, req CreateBookingReq
 			return nil, fmt.Errorf("seat not found: %s", seatIDStr)
 		}
 
+		if seat == nil {
+			s.rollbackLocks(ctx, lockedSeatIDs)
+			return nil, fmt.Errorf("internal error: seat data is nil for id %s", seatIDStr)
+		}
+
 		if !seat.IsAvailable() {
 			s.rollbackLocks(ctx, lockedSeatIDs)
 			return nil, fmt.Errorf("seat %s is not available", seat.SeatNumber)
