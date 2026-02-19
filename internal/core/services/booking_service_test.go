@@ -3,8 +3,10 @@ package services_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/go-redis/redismock/v9"
 	"github.com/google/uuid"
 	"github.com/srgjo27/scalable_ticket/internal/core/domain"
 	"github.com/srgjo27/scalable_ticket/internal/core/ports/mocks"
@@ -17,7 +19,9 @@ func TestCreateBooking_Success(t *testing.T) {
 	mockSeatRepo := mocks.NewSeatRepository(t)
 	mockBookingRepo := mocks.NewBookingRepository(t)
 
-	service := services.NewBookingService(mockSeatRepo, mockBookingRepo)
+	db, mockRedis := redismock.NewClientMock()
+
+	service := services.NewBookingService(mockSeatRepo, mockBookingRepo, db)
 
 	ctx := context.Background()
 	userID := uuid.New()
@@ -39,10 +43,11 @@ func TestCreateBooking_Success(t *testing.T) {
 	}
 
 	mockSeatRepo.On("GetByID", ctx, seatID).Return(mockSeat, nil)
-
 	mockSeatRepo.On("LockSeat", ctx, seatID, mock.AnythingOfType("uuid.UUID"), 1).Return(nil)
-
 	mockBookingRepo.On("CreateBooking", ctx, mock.AnythingOfType("*domain.Booking")).Return(nil)
+
+	cacheKey := fmt.Sprintf("seats:%s", eventID.String())
+	mockRedis.ExpectDel(cacheKey).SetVal(1)
 
 	resp, err := service.CreateBooking(ctx, req)
 
@@ -50,13 +55,18 @@ func TestCreateBooking_Success(t *testing.T) {
 	if assert.NotNil(t, resp) {
 		assert.Equal(t, 100000.0, resp.TotalAmount)
 	}
+
+	if err := mockRedis.ExpectationsWereMet(); err != nil {
+		t.Errorf("there were unfulfilled expectations: %s", err)
+	}
 }
 
 func TestCreateBooking_Fail_SeatLocked(t *testing.T) {
 	mockSeatRepo := mocks.NewSeatRepository(t)
 	mockBookingRepo := mocks.NewBookingRepository(t)
+	db, _ := redismock.NewClientMock()
 
-	service := services.NewBookingService(mockSeatRepo, mockBookingRepo)
+	service := services.NewBookingService(mockSeatRepo, mockBookingRepo, db)
 
 	ctx := context.Background()
 	seatID := uuid.New()
@@ -76,7 +86,6 @@ func TestCreateBooking_Fail_SeatLocked(t *testing.T) {
 	}
 
 	mockSeatRepo.On("GetByID", ctx, seatID).Return(mockSeat, nil)
-
 	mockSeatRepo.On("LockSeat", ctx, seatID, mock.Anything, 1).Return(errors.New("optimistic lock failed"))
 
 	resp, err := service.CreateBooking(ctx, req)

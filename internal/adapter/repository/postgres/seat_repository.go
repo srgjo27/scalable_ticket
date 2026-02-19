@@ -64,7 +64,15 @@ func (r *SeatRepository) GetByID(ctx context.Context, seatID uuid.UUID) (*domain
 
 func (r *SeatRepository) GetAvailableSeatsByEvent(ctx context.Context, eventID uuid.UUID) ([]domain.Seat, error) {
 	query := `
-	SELECT id, section, row_number, seat_number, status, version
+	SELECT 
+	id, 
+	event_id, 
+	tier_id,
+	section, 
+	row_number, 
+	seat_number, 
+	status, 
+	version
 	FROM event_seats
 	WHERE event_id = $1 AND status = 'AVAILABLE'
 	`
@@ -80,6 +88,8 @@ func (r *SeatRepository) GetAvailableSeatsByEvent(ctx context.Context, eventID u
 		var seat domain.Seat
 		if err := rows.Scan(
 			&seat.ID,
+			&seat.EventID,
+			&seat.TierID,
 			&seat.Section,
 			&seat.RowNumber,
 			&seat.SeatNumber,

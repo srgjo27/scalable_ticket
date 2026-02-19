@@ -55,3 +55,25 @@ func (h *BookingHandler) CreateBooking(w http.ResponseWriter, r *http.Request) {
 
 	}
 }
+
+func (h *BookingHandler) GetSeats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	eventID := r.URL.Query().Get("event_id")
+	if eventID == "" {
+		http.Error(w, "missing event_id", http.StatusBadRequest)
+		return
+	}
+
+	seats, err := h.svc.GetAvailableSeats(r.Context(), eventID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(seats)
+}

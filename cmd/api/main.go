@@ -1,45 +1,131 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/srgjo27/scalable_ticket/internal/adapter/handler"
 	"github.com/srgjo27/scalable_ticket/internal/adapter/repository/postgres"
 	"github.com/srgjo27/scalable_ticket/internal/core/services"
+	"github.com/srgjo27/scalable_ticket/internal/platform/database"
 )
 
-func main() {
-	connStr := "postgres://avows@localhost:5432/scalable_ticket?sslmode=disable"
-	db, err := sql.Open("postgres", connStr)
+func loadEnv(filepath string) {
+	file, err := os.Open(filepath)
+
 	if err != nil {
-		log.Fatalf("Failed to open db connection: %v", err)
+		log.Println("File .env tidak ditemukan, menggunakan variabel OS bawaan.")
+		return
 	}
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+
+			os.Setenv(key, value)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("Gagal membaca file .env: %v\n", err)
+	}
+}
+
+func main() {
+	loadEnv(".env")
+
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "localhost"
+	}
+
+	dbPort := os.Getenv("DB_PORT")
+	if dbPort == "" {
+		dbPort = "5432"
+	}
+
+	dbUser := os.Getenv("DB_USER")
+	if dbUser == "" {
+		dbUser = "postgres"
+	}
+
+	dbPassword := os.Getenv("DB_PASSWORD")
+	if dbPassword == "" {
+		dbPassword = ""
+	}
+
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		dbName = "scalable_ticket"
+	}
+
+	dbConfig := database.Config{
+		Host:     dbHost,
+		Port:     dbPort,
+		User:     dbUser,
+		Password: dbPassword,
+		DBName:   dbName,
+	}
+
+	db, err := database.NewPostgresDB(dbConfig)
+
+	if err != nil {
+		log.Fatalf("Failed to connect to db after retries: %v", err)
+	}
+
+	redisHost := os.Getenv("REDIS_HOST")
+	if redisHost == "" {
+		redisHost = "localhost"
+	}
+
+	redisPort := os.Getenv("REDIS_PORT")
+	if redisPort == "" {
+		redisPort = "6379"
+	}
+
+	log.Printf("Connecting to Redis at %s:%s...", redisHost, redisPort)
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: fmt.Sprintf("%s:%s", redisHost, redisPort),
+		DB:   0,
+	})
+
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	log.Println("Redis connected successfully!")
 
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(25)
 	db.SetConnMaxLifetime(5 * time.Minute)
-
-	if err := db.Ping(); err != nil {
-		log.Fatalf("Failed to ping db: %v", err)
-	}
-
 	defer db.Close()
-
-	log.Println("Database connected successfully with tuned pool settings.")
 
 	seatRepo := postgres.NewSeatRepository(db)
 	bookingRepo := postgres.NewBookingRepository(db)
 
-	bookingService := services.NewBookingService(seatRepo, bookingRepo)
+	bookingService := services.NewBookingService(seatRepo, bookingRepo, redisClient)
 
 	bookingHandler := handler.NewBookingHandler(bookingService)
 
@@ -50,6 +136,8 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/bookings", bookingHandler.CreateBooking)
+
+	mux.HandleFunc("/seats", bookingHandler.GetSeats)
 
 	server := &http.Server{
 		Addr:         ":8080",

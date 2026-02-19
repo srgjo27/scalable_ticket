@@ -2,12 +2,14 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/srgjo27/scalable_ticket/internal/core/domain"
 	"github.com/srgjo27/scalable_ticket/internal/core/ports"
 )
@@ -28,12 +30,14 @@ type CreateBookingResponse struct {
 type BookingService struct {
 	seatRepo    ports.SeatRepository
 	bookingRepo ports.BookingRepository
+	redisClient *redis.Client
 }
 
-func NewBookingService(seatRepo ports.SeatRepository, bookingRepo ports.BookingRepository) *BookingService {
+func NewBookingService(seatRepo ports.SeatRepository, bookingRepo ports.BookingRepository, redisClient *redis.Client) *BookingService {
 	return &BookingService{
 		seatRepo:    seatRepo,
 		bookingRepo: bookingRepo,
+		redisClient: redisClient,
 	}
 }
 
@@ -120,6 +124,9 @@ func (s *BookingService) CreateBooking(ctx context.Context, req CreateBookingReq
 		return nil, errors.New("internal server error: failed to create booking")
 	}
 
+	cacheKey := fmt.Sprintf("seats:%s", req.EventID)
+	s.redisClient.Del(ctx, cacheKey)
+
 	return &CreateBookingResponse{
 		BookingID:   bookingID.String(),
 		TotalAmount: totalAmount,
@@ -171,4 +178,31 @@ func (s *BookingService) processExpiredBookings(ctx context.Context) {
 			log.Printf("Booking %s expired and seats released.", id)
 		}
 	}
+}
+
+func (s *BookingService) GetAvailableSeats(ctx context.Context, eventIDStr string) ([]domain.Seat, error) {
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		return nil, errors.New("invalid event id")
+	}
+
+	cacheKey := fmt.Sprintf("seats:%s", eventIDStr)
+
+	cachedData, err := s.redisClient.Get(ctx, cacheKey).Result()
+	if err == nil {
+		var seats []domain.Seat
+		if err := json.Unmarshal([]byte(cachedData), &seats); err == nil {
+			return seats, nil
+		}
+	}
+
+	seats, err := s.seatRepo.GetAvailableSeatsByEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+
+	dataToCache, _ := json.Marshal(seats)
+	s.redisClient.Set(ctx, cacheKey, dataToCache, 1*time.Minute)
+
+	return seats, nil
 }
